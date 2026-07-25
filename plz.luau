@@ -1,7 +1,7 @@
 --[=[
 	## plz
 
-	My UI library that's as simple as possible, plz.
+	my super-focused ui library, plz.
 ]=]
 local plz = {}
 
@@ -252,6 +252,7 @@ function pen.render(ctx: PenCtx)
 			end
 		end
 
+		assert(id)
 		ctx.dirty[instance] = id :: Unpack<Allocation>
 		updated[instance] = true
 
@@ -268,7 +269,7 @@ function pen.render(ctx: PenCtx)
 	for instance, id in ctx.dirty do
 		local allocation = allocation_from_id(id)
 
-		if not updated[instance] then
+		if updated[instance] == nil then
 			-- restore all defaults
 			for key, value in get_defaults_entry(allocation) do
 				instance[key] = unpack_nullable(value)

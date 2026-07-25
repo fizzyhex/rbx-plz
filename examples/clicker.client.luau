@@ -1,3 +1,9 @@
+--[[
+	clicker.client.luau
+
+	Draws an array of buttons, with a bar next to each that fills as you click.
+]]
+
 local Players = game:GetService("Players")
 local plz = require("../plz")
 
@@ -48,8 +54,7 @@ while true do
 			btn_clicks[i] += 1
 		end)
 
-		plz.event(btn, button_prefab.ChildAdded, function(child: Instance)
-			
+		plz.event(btn, button_prefab.ChildAdded, function(child: Instance)			
 			print(`hi {child}!`)
 		end)
 
