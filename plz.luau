@@ -90,7 +90,7 @@ do
 
 			table.clear(ctx.accessed_this_frame[instance])
 
-			-- TODO: clean-up based on non-accessed keys too
+			-- future: we could clean-up non-accessed keys here too, but the use-case is narrow.
 
 			for event_name, packs in event_pack_map do
 				for _, listener in ctx.listeners[instance][event_name] do
