@@ -224,7 +224,7 @@ function pen.render(ctx: PenCtx)
                 assert(reference_offset)
 				assert(value._allocation, `missing allocation! {key} {reference_offset}`)
 
-				if not defaults[key] then
+				if defaults[key] == nil then
 					defaults[key] = nullable(instance[key])
 					--print(`learnt a new default for {key}`, defaults[key])
 				end
@@ -241,7 +241,7 @@ function pen.render(ctx: PenCtx)
 				evy.add_listener(ctx.event_context, instance, key, value)
 				continue
             else
-				if not defaults[key] then
+				if defaults[key] == nil then
 					defaults[key] = nullable(instance[key])
 					--print(`learnt a new default for {key}`, defaults[key])
 				end
