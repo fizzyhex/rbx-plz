@@ -43,7 +43,6 @@ do
 			return
 		end
 
-		ctx.mapping[instance][event] = ctx.mapping[instance][event] or {} 
 		ctx.connections[instance] = ctx.connections[instance] or {}
 		ctx.listeners[instance] = ctx.listeners[instance] or {}
 		ctx.listeners[instance][event] = ctx.listeners[instance][event] or {}
@@ -59,23 +58,31 @@ do
 		local signal = (instance :: Instance & { [string]: unknown })[event]
 		assert(typeof(signal) == "RBXScriptSignal")
 
-		local packs = ctx.mapping[instance][event]
+		local packs = {}
 		--print(`connecting to {instance}.{event}`)
 
 		ctx.connections[instance][event] = (signal::any):Connect(function(...)
 			table.insert(packs, table.pack(...))
 		end)
+
+		-- recorded last, so a bad event name throws again next frame instead of going quiet
+		ctx.mapping[instance][event] = packs
 	end
 
 	function evy.add_listener(ctx: EvyContext, instance: Instance, event: string, callback: (...any) -> ())
 		table.insert(ctx.listeners[instance][event], callback)
 	end
 
-	function evy.flush(ctx: EvyContext)
+	function evy.flush(ctx: EvyContext, complete: boolean)
 		for instance, event_pack_map in ctx.mapping do
 			local access_grants = ctx.accessed_this_frame[instance]
 
 			if not next(access_grants) then
+				if not complete then
+					-- the frame failed before reaching this instance; keep it for the next one
+					continue
+				end
+
 				ctx.mapping[instance] = nil
 				ctx.listeners[instance] = nil
 				
@@ -196,7 +203,7 @@ function pen.node<T>(ctx: PenCtx, allocation: Allocation<T>, hook): Node<T>
 	return element
 end
 
-function pen.render(ctx: PenCtx)
+local function apply(ctx: PenCtx): number
 	local updates = 0
 	local updated = {}
 
@@ -205,6 +212,10 @@ function pen.render(ctx: PenCtx)
 		local instance = get_instance(element._allocation, offset)
 		local defaults = get_defaults_entry(element._allocation)
         local last = ctx.last_changes[id] or {} :: keyof<index<PenCtx, "last_changes">>
+
+		-- tracked before writing, so a write that throws can't leave untracked properties behind
+		ctx.dirty[instance] = id :: Unpack<Allocation>
+		ctx.last_changes[id] = last
 
 		for key, value in element :: Node<any> do
 			if key == "_allocation" then
@@ -252,8 +263,6 @@ function pen.render(ctx: PenCtx)
 			end
 		end
 
-		assert(id)
-		ctx.dirty[instance] = id :: Unpack<Allocation>
 		updated[instance] = true
 
         for key, value in last do
@@ -262,8 +271,6 @@ function pen.render(ctx: PenCtx)
 				last[key] = nil
 			end
         end
-
-        ctx.last_changes[id] = last
 	end
 
 	for instance, id in ctx.dirty do
@@ -280,6 +287,14 @@ function pen.render(ctx: PenCtx)
 		end
 	end
 
+	return updates
+end
+
+function pen.render(ctx: PenCtx)
+	local ok, updates = xpcall(apply, debug.traceback, ctx)
+
+	-- recycle the frame even if a write threw, otherwise its nodes stay queued
+	-- and every later frame repeats the failing write
 	for index = 1, #ctx.queue do
 		local element = ctx.queue[index]
 		table.clear(element)
@@ -289,7 +304,11 @@ function pen.render(ctx: PenCtx)
 	table.clear(ctx.queue)
 	table.clear(ctx.references)
 
-	evy.flush(ctx.event_context)
+	evy.flush(ctx.event_context, ok)
+
+	if not ok then
+		error(updates, 0)
+	end
 
 	return updates
 end
