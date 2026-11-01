@@ -10,6 +10,10 @@ const STEP_SIGNAL = RunService:IsServer() and RunService.Heartbeat or RunService
 
 local evy = {}
 
+-- plz.changed keys: "changed:Text" <-> "Text". ':' can't appear in a property name
+local changed_keys: { [string]: string } = {}
+local changed_properties: { [string]: string } = {}
+
 export type EvyContext = {
 	-- { [Instance]: { [event_name: string]: { pack() } } }
 	mapping: { [Instance]: { [string]: { any } } },
@@ -18,7 +22,9 @@ export type EvyContext = {
 	-- { [Instance]: { [event_name: string]: true } }
 	accessed_this_frame: { [Instance]: { [string]: true } },
 	-- cleared every frame
-	listeners: { [Instance]: { [string]: { (...any) -> () } } }
+	listeners: { [Instance]: { [string]: { (...any) -> () } } },
+	-- last value plz wrote or reported, for properties with plz.changed listeners
+	known: { [Instance]: { [string]: any } },
 }
 
 do
@@ -27,7 +33,8 @@ do
 			mapping = {},
 			connections = {},
 			accessed_this_frame = {},
-			listeners = {}
+			listeners = {},
+			known = {},
 		}
 
 		return new_context
@@ -55,15 +62,38 @@ do
 			return -- don't register twice
 		end
 		
-		local signal = (instance :: Instance & { [string]: unknown })[event]
-		assert(typeof(signal) == "RBXScriptSignal")
-
 		local packs = {}
 		--print(`connecting to {instance}.{event}`)
 
-		ctx.connections[instance][event] = (signal::any):Connect(function(...)
-			table.insert(packs, table.pack(...))
-		end)
+		local property = changed_properties[event]
+
+		if property then
+			local target = instance :: any
+			-- throws for a bad property name before anything is recorded
+			local signal = instance:GetPropertyChangedSignal(property)
+			local known = ctx.known[instance] or {}
+			ctx.known[instance] = known
+			known[property] = target[property]
+
+			ctx.connections[instance][event] = signal:Connect(function()
+				local value = target[property]
+
+				-- plz's own writes echoing back, or a value already reported
+				if value == known[property] then
+					return
+				end
+
+				known[property] = value
+				table.insert(packs, table.pack(value))
+			end)
+		else
+			local signal = (instance :: Instance & { [string]: unknown })[event]
+			assert(typeof(signal) == "RBXScriptSignal")
+
+			ctx.connections[instance][event] = (signal::any):Connect(function(...)
+				table.insert(packs, table.pack(...))
+			end)
+		end
 
 		-- recorded last, so a bad event name throws again next frame instead of going quiet
 		ctx.mapping[instance][event] = packs
@@ -91,6 +121,7 @@ do
 					connection:Disconnect()
 				end
 
+				ctx.known[instance] = nil
 				ctx.connections[instance] = nil
 				continue
 			end
@@ -216,6 +247,8 @@ local function apply(ctx: PenCtx): number
 		-- tracked before writing, so a write that throws can't leave untracked properties behind
 		ctx.dirty[instance] = id :: Unpack<Allocation>
 		ctx.last_changes[id] = last
+		-- only set for instances with plz.changed listeners
+		local known = ctx.event_context.known[instance]
 
 		for key, value in element :: Node<any> do
 			if key == "_allocation" then
@@ -243,6 +276,10 @@ local function apply(ctx: PenCtx): number
 				local resolution = get_instance(value._allocation, reference_offset)
 
 				if last[key] ~= resolution then
+					if known then
+						known[key] = resolution
+					end
+
 					instance[key] = resolution
 					last[key] = resolution
 					updates += 1
@@ -250,11 +287,16 @@ local function apply(ctx: PenCtx): number
 			elseif typeof(value) == "function" then
 				evy.touch(ctx.event_context, instance, key)
 				evy.add_listener(ctx.event_context, instance, key, value)
+				known = ctx.event_context.known[instance]
 				continue
             else
 				if defaults[key] == nil then
 					defaults[key] = nullable(instance[key])
 					--print(`learnt a new default for {key}`, defaults[key])
+				end
+
+				if known then
+					known[key] = value
 				end
 
                 instance[key] = value
@@ -267,6 +309,10 @@ local function apply(ctx: PenCtx): number
 
         for key, value in last do
 			if (element :: Node<unknown> & {})[key] == nil and defaults[key] ~= nil then
+				if known then
+					known[key] = unpack_nullable(defaults[key])
+				end
+
 				instance[key] = unpack_nullable(defaults[key])
 				last[key] = nil
 			end
@@ -342,6 +388,24 @@ end
 function plz.event<T...>(node: Node, key: RBXScriptSignal<T...>, fn: (T...) -> ())
 	local s = if typeof(key) == "string" then key else tostring(key):sub(8)
 	node[s] = fn
+end
+
+--[=[
+	Listens for changes to a property of the node's instance made by anything
+	other than plz: typing into a TextBox, scrolling, layout changing
+	AbsoluteSize. Changes are buffered like events and delivered during the next
+	render, one call per new value.
+]=]
+function plz.changed(node: Node, property: string, fn: (value: any) -> ())
+	local key = changed_keys[property]
+
+	if not key then
+		key = `changed:{property}`
+		changed_keys[property] = key
+		changed_properties[key] = property
+	end
+
+	node[key] = fn
 end
 
 function plz.loop(pen: Pen, renderer: (delta_time: number, updates: number) -> (), loop)
