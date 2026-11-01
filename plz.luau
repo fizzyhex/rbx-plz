@@ -84,6 +84,7 @@ do
 					connection:Disconnect()
 				end
 
+				ctx.accessed_this_frame[instance] = nil
 				ctx.connections[instance] = nil
 				continue
 			end
@@ -107,7 +108,6 @@ do
 end
 
 local templates: { Instance } = {}
-local pool: { [number]: Instance } = {}
 local changes: { [number]: { [string]: { any } } } = {}
 
 const CHUNK_SIZE = 10000
@@ -120,6 +120,7 @@ type EventKey<T...> = { _is_event_key: true, _listener: (T...) -> () }
 
 export type Pen = {
 	render: (self: Pen) -> number,
+	destroy: (self: Pen) -> (),
 	node: <T>(self: Pen, allocation: Allocation<T>) -> Node<T>
 }
 
@@ -130,6 +131,8 @@ export type Node<T=Instance, A...=...unknown> = T & {
 }
 
 export type PenCtx = {
+	-- this pen's instances by slot id; pens share allocations, not instances
+	pool: { [number]: Instance & {} },
     last_changes: { [number]: { [string]: true } },
 	queue: { Node },
 	dirty: { [Instance & {}]: number },
@@ -162,14 +165,14 @@ local function allocation_from_id(id: number)
 	return id - id % CHUNK_SIZE
 end
 
-local function get_instance(allocation: Allocation<any>, offset: number): Instance & {}
+local function get_instance(ctx: PenCtx, allocation: Allocation<any>, offset: number): Instance & {}
 	assert(offset < CHUNK_SIZE, `Offset > CHUNK_SIZE ({CHUNK_SIZE})`)
 	local id = get_id(allocation, offset)
-	local match = pool[id]
+	local match = ctx.pool[id]
 
 	if not match then
 		local new = Instance.fromExisting(templates[allocation :: Unpack<Allocation>])
-		pool[id] = new
+		ctx.pool[id] = new
 		return new
 	end
 
@@ -202,7 +205,7 @@ function pen.render(ctx: PenCtx)
 
 	for offset, element in ctx.queue do
 		local id = get_id(element._allocation, offset)
-		local instance = get_instance(element._allocation, offset)
+		local instance = get_instance(ctx, element._allocation, offset)
 		local defaults = get_defaults_entry(element._allocation)
         local last = ctx.last_changes[id] or {} :: keyof<index<PenCtx, "last_changes">>
 
@@ -229,7 +232,7 @@ function pen.render(ctx: PenCtx)
 					--print(`learnt a new default for {key}`, defaults[key])
 				end
 
-				local resolution = get_instance(value._allocation, reference_offset)
+				local resolution = get_instance(ctx, value._allocation, reference_offset)
 
 				if last[key] ~= resolution then
 					instance[key] = resolution
@@ -294,12 +297,34 @@ function pen.render(ctx: PenCtx)
 	return updates
 end
 
+--[=[
+	Destroys the pen's instances and disconnects its events. Drawing with the pen
+	afterwards starts from scratch.
+]=]
+function pen.destroy(ctx: PenCtx)
+	for _, connections in ctx.event_context.connections do
+		for _, connection in connections do
+			connection:Disconnect()
+		end
+	end
+
+	for _, instance in ctx.pool do
+		instance:Destroy()
+	end
+
+	table.clear(ctx.pool)
+	table.clear(ctx.dirty)
+	table.clear(ctx.last_changes)
+	ctx.event_context = evy.context()
+end
+
 assert(allocation_from_id(CHUNK_SIZE) == CHUNK_SIZE)
 assert(allocation_from_id(CHUNK_SIZE * 2) == CHUNK_SIZE * 2)
 assert(allocation_from_id((CHUNK_SIZE * 2) + math.floor(CHUNK_SIZE / 2)) == CHUNK_SIZE * 2)
 
 function plz.pen()
     local ctx: PenCtx = {
+        pool = {},
         last_changes = {},
         queue = {},
 		dirty = {},
