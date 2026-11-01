@@ -151,18 +151,19 @@ local changes: { [number]: { [string]: { any } } } = {}
 const CHUNK_SIZE = 10000
 local latest_allocation = 0
 
-type Allocation<T = any> = { _T: T }
+type Allocation<T = any> = { read _T: T }
 type Unpack<T> = index<T, "_T">
 
 type EventKey<T...> = { _is_event_key: true, _listener: (T...) -> () }
 
 export type Pen = {
 	render: (self: Pen) -> number,
-	node: <T>(self: Pen, allocation: Allocation<T>) -> Node<T>
+	node: <T>(self: Pen, allocation: Allocation<T>) -> Node<T>,
+	instance: <T>(self: Pen, node: { read _allocation: Allocation<T> }) -> T,
 }
 
 export type Node<T=Instance, A...=...unknown> = T & {
-	_allocation: Allocation<any>,
+	read _allocation: Allocation<T>,
 } & {
 	[EventKey<A...>]: (A...) -> ()
 }
@@ -232,6 +233,18 @@ function pen.node<T>(ctx: PenCtx, allocation: Allocation<T>, hook): Node<T>
 	table.insert(ctx.queue, element)
 	ctx.references[element] = #ctx.queue
 	return element
+end
+
+--[=[
+	Returns the instance a node renders to this frame, as of the last render.
+	Use it to read properties or call methods. Avoid writing properties plz
+	doesn't manage, since the instance is reused by other nodes later. The node
+	can sit on a different instance next frame, so look it up each frame.
+]=]
+function pen.instance<T>(ctx: PenCtx, node: Node<T>): T
+	local offset = ctx.references[node]
+	assert(offset, "node isn't queued in this pen this frame")
+	return get_instance(node._allocation, offset) :: any
 end
 
 local function apply(ctx: PenCtx): number
