@@ -196,7 +196,7 @@ function pen.node<T>(ctx: PenCtx, allocation: Allocation<T>, hook): Node<T>
 	return element
 end
 
-function pen.render(ctx: PenCtx)
+local function apply(ctx: PenCtx): number
 	local updates = 0
 	local updated = {}
 
@@ -280,6 +280,14 @@ function pen.render(ctx: PenCtx)
 		end
 	end
 
+	return updates
+end
+
+function pen.render(ctx: PenCtx)
+	local ok, updates = pcall(apply, ctx)
+
+	-- recycle the frame even if a write threw, otherwise its nodes stay queued
+	-- and every later frame repeats the failing write
 	for index = 1, #ctx.queue do
 		local element = ctx.queue[index]
 		table.clear(element)
@@ -290,6 +298,10 @@ function pen.render(ctx: PenCtx)
 	table.clear(ctx.references)
 
 	evy.flush(ctx.event_context)
+
+	if not ok then
+		error(updates, 0)
+	end
 
 	return updates
 end
